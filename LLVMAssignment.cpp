@@ -29,7 +29,8 @@
 #include <llvm/Pass.h>
 #include <llvm/Support/raw_ostream.h>
 
-#include "Liveness.h"
+#include "PointToAnalysis.h"
+
 using namespace llvm;
 static ManagedStatic<LLVMContext> GlobalContext;
 static LLVMContext &getGlobalContext() { return *GlobalContext; }
@@ -47,26 +48,9 @@ struct EnableFunctionOptPass : public FunctionPass {
 
 char EnableFunctionOptPass::ID = 0;
 
-///!TODO TO BE COMPLETED BY YOU FOR ASSIGNMENT 3
-struct FuncPtrPass : public ModulePass {
-  static char ID; // Pass identification, replacement for typeid
-  FuncPtrPass() : ModulePass(ID) {}
-
-  bool runOnModule(Module &M) override {
-    errs() << "Hello: ";
-    errs().write_escaped(M.getName()) << '\n';
-    M.dump();
-    errs() << "------------------------------\n";
-    return false;
-  }
-};
-
-char FuncPtrPass::ID = 0;
-static RegisterPass<FuncPtrPass> X("funcptrpass",
-                                   "Print function call instruction");
-
-char Liveness::ID = 0;
-static RegisterPass<Liveness> Y("liveness", "Liveness Dataflow Analysis");
+char PointToAnalysis::ID = 0;
+static RegisterPass<PointToAnalysis> X("point-to", "Point-to Analysis Pass",
+                                       false, false);
 
 static cl::opt<std::string>
     InputFilename(cl::Positional, cl::desc("<filename>.bc"), cl::init(""));
@@ -75,8 +59,7 @@ int main(int argc, char **argv) {
   LLVMContext &Context = getGlobalContext();
   SMDiagnostic Err;
   // Parse the command line to read the Inputfilename
-  cl::ParseCommandLineOptions(
-      argc, argv, "FuncPtrPass \n My first LLVM too which does not do much.\n");
+  cl::ParseCommandLineOptions(argc, argv, "Point-to analysis.\n");
 
   // Load the input module
   std::unique_ptr<Module> M = parseIRFile(InputFilename, Err, Context);
@@ -92,11 +75,6 @@ int main(int argc, char **argv) {
   /// Transform it to SSA
   Passes.add(llvm::createPromoteMemoryToRegisterPass());
 
-  /// Your pass to print Function and Call Instructions
-  Passes.add(new Liveness());
-  // Passes.add(new FuncPtrPass());
+  Passes.add(new PointToAnalysis());
   Passes.run(*M.get());
-#ifndef NDEBUG
-  system("pause");
-#endif
 }

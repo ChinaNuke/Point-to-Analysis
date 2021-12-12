@@ -29,7 +29,7 @@ $ docker run -td --name llvm_experiment_3 -v "$PWD/Point-to-Analysis":/root/Poin
 $ docker exec -it llvm_experiment_3 bash
 ```
 
-重新开机后，docker 容器可能没有在运行，你不必再执行一遍 `docker run` 命令，只需要执行 `docker start llvm_experiment_2` 就可以了。如果你还是不太熟悉 docker 命令的话，[这里](https://dockerlabs.collabnix.com/docker/cheatsheet/)有一份 Docker Cheat Sheet 可以查阅。
+重新开机后，docker 容器可能没有在运行，你不必再执行一遍 `docker run` 命令，只需要执行 `docker start llvm_experiment_3` 就可以了。如果你还是不太熟悉 docker 命令的话，[这里](https://dockerlabs.collabnix.com/docker/cheatsheet/)有一份 Docker Cheat Sheet 可以查阅。
 
 ## 编译中间代码
 

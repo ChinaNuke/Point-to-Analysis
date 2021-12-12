@@ -48,7 +48,7 @@ int moo(char x, int op1, int op2) {
     return 0;
 }
 
-// 22 : plus
+// 22 : plus, minus
 // 29 : foo
 // 34 : malloc
 // 36 : malloc

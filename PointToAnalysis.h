@@ -15,15 +15,14 @@ using namespace llvm;
 
 namespace {
 
-// 注意：PointToSets没有全局的实体，都是作为临时变量和参数存在，
-// 结果只保存在DataflowResult中。
+// 注意：PointToSets没有全局的实体，都是作为临时变量和参数存在
 struct PointToSets {
   // 需要确保这两个map的key是互不相交的
   // 需要注意这俩map虽然形式一样但存储的内容是不同的
   // pointToSets: 一个变量它指向什么
-  // binding: 一个变量它等同于什么
+  // binding: 一个变量它等同于什么，可以理解为别名
   std::map<Value *, std::set<Value *>> pointToSets;
-  std::map<Value *, std::set<Value *>> bindings; // 存储临时变量映射
+  std::map<Value *, std::set<Value *>> bindings; // 存储临时变量绑定关系
 
   friend raw_ostream &operator<<(raw_ostream &out, const PointToSets &pts);
 
@@ -39,12 +38,12 @@ struct PointToSets {
     return bindings.find(value) != bindings.end();
   }
 
-  void setBinding(Value *pointer, std::set<Value *>values) {
+  void setBinding(Value *pointer, std::set<Value *> values) {
     bindings[pointer] = values;
   }
 
   std::set<Value *> getBinding(Value *tmp) {
-    assert(hasBinding(tmp));
+    // assert(hasBinding(tmp));
     return bindings[tmp];
   }
 
@@ -59,9 +58,9 @@ struct PointToSets {
     auto tmp = bindings.find(pointer);
     if (tmp != bindings.end()) {
       std::set<Value *> result;
-      LOG_DEBUG("Found binding for: " << *(tmp->first));
+      // LOG_DEBUG("Found binding for: " << *(tmp->first));
       for (Value *v : tmp->second) {
-        LOG_DEBUG("Binding target: " << *v);
+        // LOG_DEBUG("Binding target: " << *v);
         // std::set<Value *> &pts = pointToSets.at(v);
         if (pointToSets.find(v) == pointToSets.end()) {
           LOG_DEBUG("Warn: Empty pts for binding target " << *v);
@@ -71,8 +70,7 @@ struct PointToSets {
       }
       return result;
     } else {
-      LOG_DEBUG("Found in pts: " << *pointer);
-      // LOG_DEBUG("Current pts: \n" << *this);
+      // LOG_DEBUG("Found in pts: " << *pointer);
       return pointToSets.at(pointer);
     }
   }
@@ -80,29 +78,13 @@ struct PointToSets {
   void setPTS(Value *pointer, std::set<Value *> &set) {
     pointToSets[pointer] = set;
   }
-
-  void inserIntoPTS(Value *pointer, Value *value) {
-    pointToSets[pointer].insert(value);
-  }
-
-  void clearPTS(Value *pointer) {
-    pointToSets[pointer].clear();
-  }
-
-  // 根据值查找指向它的指针，假设只有一个这样的指针。
-  Value *getPointer(Value *value) {
-    for (auto pair : pointToSets) {
-      auto result = pair.second.find(value);
-      if (result != pair.second.end()) {
-        return pair.first;
-      }
-    }
-    assert(false);
-  }
-
 };
 
-inline raw_ostream &operator<<(raw_ostream &out, const std::set<Value *> &setOfValues) {
+// Example:
+//   {%a_fptr, %b_fptr, %*}
+//   {@plus, @minus}
+inline raw_ostream &operator<<(raw_ostream &out,
+                               const std::set<Value *> &setOfValues) {
   out << "{";
   for (auto iter = setOfValues.begin(); iter != setOfValues.end(); iter++) {
     if (iter != setOfValues.begin()) {
@@ -122,6 +104,23 @@ inline raw_ostream &operator<<(raw_ostream &out, const std::set<Value *> &setOfV
   return out;
 }
 
+// Example:
+// Point-to sets:
+//         %a.addr: {%a}
+//         %b.addr: {%b}
+//         %a_fptr.addr: {%*}
+//         %b_fptr.addr: {%*, %*, %*}
+//         %t_fptr: {@plus}
+//         %*: {@plus, @minus}
+//         %*: {@plus, @minus}
+//         %*: {@plus}
+// Temp value bindings:
+//         %a_fptr= {%*}
+//         %b_fptr= {%*, %*, %*}
+//         %*= {%*}
+//         %*= {@plus}
+//         %*= {%*, %*, %*}
+//         ......
 inline raw_ostream &operator<<(raw_ostream &out, const PointToSets &pts) {
   out << "Point-to sets: \n";
   for (const auto v : pts.pointToSets) {
@@ -214,9 +213,11 @@ public:
       handleStoreInst(storeInst, dfval);
     } else if (LoadInst *loadInst = dyn_cast<LoadInst>(inst)) {
       handleLoadInst(loadInst, dfval);
-    } else if (GetElementPtrInst *getElementPtrInst = dyn_cast<GetElementPtrInst>(inst)) {
+    } else if (GetElementPtrInst *getElementPtrInst =
+                   dyn_cast<GetElementPtrInst>(inst)) {
       handleGetElementPtrInst(getElementPtrInst, dfval);
     } else if (BitCastInst *bitCastInst = dyn_cast<BitCastInst>(inst)) {
+      // 也用不着，嘿嘿
       // handleBitCastInst(bitCastInst, dfval);
     } else if (MemCpyInst *memCpyInst = dyn_cast<MemCpyInst>(inst)) {
       handleMemCpyInst(memCpyInst, dfval);
@@ -246,13 +247,6 @@ public:
   }
 
 private:
-
-  void handleAllocaInst(AllocaInst *allocaInst, PointToSets *dfval) {
-    Value *result = dyn_cast<Value>(allocaInst);
-    std::set<Value *> s;
-    dfval->setPTS(result, s);
-  }
-
   /// *x = y
   /// store <ty> <value>, <ty>* <pointer>
   void handleStoreInst(StoreInst *storeInst, PointToSets *dfval) {
@@ -265,7 +259,7 @@ private:
       return;
     }
 
-    // pointer可能指向多个Value，要依次对每一个进行指向
+    // pointer可能指向多个目标，要依次对每一个进行指向
     std::set<Value *> queue = {pointer};
     std::set<Value *> targets;
     while (!queue.empty()) {
@@ -286,7 +280,8 @@ private:
       values.insert(value);
     }
 
-    // 考虑PPT中store语句的规则2
+    // 考虑PPT中store语句的规则2，当存在多个可能的目标时，并不确定实际运行时指向哪一个，
+    // 因此不但要依次处理每个目标的指向，还不能将目标原先的指向清空。
     if (targets.size() == 1) {
       dfval->setPTS(*targets.begin(), values);
     } else {
@@ -296,22 +291,6 @@ private:
         dfval->setPTS(target, oldPTS);
       }
     }
-
-
-    // if (dfval->hasBinding(pointer)) {
-    //   // LOG_DEBUG("The pointer " << *pointer << " has binding...");
-    //   LOG_DEBUG("Current dfval: " << *dfval);
-    //   LOG_DEBUG("Binding target for pointer " << *pointer << ": " << dfval->getBinding(pointer));
-    //   assert(dfval->getBinding(pointer).size() == 1);
-    //   pointer = *(dfval->getBinding(pointer).begin());
-    // }
-    // if (dfval->hasBinding(value)) {
-    //   std::set<Value *> set = dfval->getBinding(value);
-    //   dfval->setPTS(pointer, set);
-    // } else {
-    //   dfval->clearPTS(pointer);
-    //   dfval->inserIntoPTS(pointer, value);
-    // }
   }
 
   /// x = *y
@@ -326,18 +305,15 @@ private:
       return;
     }
 
-    // LOG_DEBUG("Current dfval: " << *dfval);
-
     std::set<Value *> s = dfval->getPTS(pointer);
     dfval->setBinding(result, s);
   }
 
   /// <result> = getelementptr inbounds <ty>* <ptrval>{, <ty> <idx>}*
-  void handleGetElementPtrInst(GetElementPtrInst *getElementPtrInst, PointToSets *dfval) {
+  void handleGetElementPtrInst(GetElementPtrInst *getElementPtrInst,
+                               PointToSets *dfval) {
     Value *ptrval = getElementPtrInst->getPointerOperand();
     Value *result = dyn_cast<Value>(getElementPtrInst);
-
-    LOG_DEBUG("ElementPtr binding: " << *result << " to " << *ptrval);
 
     if (dfval->hasBinding(ptrval)) {
       dfval->setBinding(result, dfval->getBinding(ptrval));
@@ -346,41 +322,21 @@ private:
     }
   }
 
-  // <result> = bitcast <ty> <value> to <ty2>
-  void handleBitCastInst(BitCastInst *bitCastInst, PointToSets *dfval) {
-    Value *value = bitCastInst->getOperand(0);
-    Value *result = dyn_cast<Value>(bitCastInst);
-
-    LOG_DEBUG("BitCast value: " << *value);
-    LOG_DEBUG("BitCast result: " << *bitCastInst);
-
-    if (dfval->hasBinding(value)) {
-      assert(dfval->getBinding(value).size() == 1);
-      value = *(dfval->getBinding(value).begin());
-    }
-
-    std::set<Value *> s = {value};
-    dfval->setBinding(result, s);
-  }
-
   void handleMemCpyInst(MemCpyInst *memCpyInst, PointToSets *dfval) {
     // getSource()和getDest()函数可以自动处理BitCast，提取出最终的操作数
     Value *source = memCpyInst->getSource();
     Value *dest = memCpyInst->getDest();
 
-    LOG_DEBUG("Source of MemCpyInst: " << *source);
-    LOG_DEBUG("Dest of MemCpyInst: " << *dest);
+    // LOG_DEBUG("Source of MemCpyInst: " << *source);
+    // LOG_DEBUG("Dest of MemCpyInst: " << *dest);
 
     if (dfval->hasBinding(dest)) {
       assert(dfval->getBinding(dest).size() == 1);
       dest = *(dfval->getBinding(dest).begin());
     }
 
-    // Value *pointer = dfval->getPointer(dest);
     std::set<Value *> s = dfval->getPTS(source);
     dfval->setPTS(dest, s);
-
-    LOG_DEBUG("Current dfval: \n" << *dfval);
   }
 
   void handleReturnInst(ReturnInst *returnInst, PointToSets *dfval) {
@@ -397,8 +353,16 @@ private:
     }
   }
 
+
+  ///
+  /// 将近200行的函数，比较复杂。
+  /// 主要流程是在要进行调用之前进行参数和返回值的绑定，并记录绑定关系，
+  /// 在函数调用完成后从目标函数最后一个基本块的outcoming中获得处理结果，
+  /// 把结果与之前记录的进行对比，发生改变则更新。
+  /// 需要格外注意的是内层的改变，即一个变量的指向集或者绑定没有改变，但它所指向的目标的
+  /// 指向集或者绑定关系可能已经改变了。
+  /// 
   void handleCallInst(CallInst *callInst, PointToSets *dfval) {
-    // LOG_DEBUG("Call instruction: " << *callInst);
     Value *callResult = dyn_cast<Value>(callInst);
     Value *fnptrval = callInst->getCalledOperand();
     unsigned lineno = callInst->getDebugLoc().getLine();
@@ -415,11 +379,10 @@ private:
     PointToSets initval;
     PointToVisitor visitor; // visitor在不同的被调函数中共享
 
-    LOG_DEBUG("Point -1.");
     LOG_DEBUG("Current dfval in CallInst: \n" << *dfval);
-    // LOG_DEBUG("fnptrval: " << *fnptrval);
 
-    // 可能是直接调用一个函数，比如@clever，也可能是一个指向多个函数的绑定，比如 %1 = @plus, @minus
+    // 可能是直接调用一个函数，比如@clever，也可能是一个指向多个函数的绑定，比如
+    // %1 = @plus, @minus
     std::set<Value *> fnvals;
     if (isa<Function>(fnptrval)) {
       fnvals.insert(fnptrval);
@@ -448,17 +411,12 @@ private:
           Value *calleeArg = func->getArg(i);
 
           argPairs.insert(std::make_pair(callerArg, calleeArg));
-          
-          LOG_DEBUG("Point 0.");
-          // LOG_DEBUG("Caller arg: " << *callerArg);
 
-          /// TODO: 不一定都是binding
-          // std::set<Value *> bindingTarget;
           if (dfval->hasBinding(callerArg)) {
             std::set<Value *> bindingTarget = dfval->getBinding(callerArg);
             calleeArgBindings.setBinding(calleeArg, bindingTarget);
 
-            /// TODO: 可以和下面进行合并 
+            /// TODO: 可以和下面进行合并
             std::set<Value *> queue = bindingTarget;
             while (!queue.empty()) {
               Value *v = *queue.begin();
@@ -486,54 +444,50 @@ private:
                 std::set<Value *> s = dfval->getPTS(v);
                 // LOG_DEBUG("Dependencies found: " << s);
                 calleeArgBindings.setPTS(v, s);
-                // 
+                //
                 argPairs.insert(std::make_pair(v, v));
                 queue.insert(s.begin(), s.end());
               }
             }
           }
-          
-          LOG_DEBUG("Point 1.");
-          
         }
       }
 
       // 返回值绑定
       if (func->getReturnType()->isPointerTy()) {
-        LOG_DEBUG("Function " << func->getName() << " has a pointer return type.");
+        LOG_DEBUG("Function " << func->getName()
+                              << " has a pointer return type.");
         calleeArgBindings.setBinding(func, {func});
         argPairs.insert(std::make_pair(callResult, func));
       }
-      
-      result[targetEntry].first = calleeArgBindings; // incomings of target entry
+
+      result[targetEntry].first =
+          calleeArgBindings; // incomings of target entry
 
       LOG_DEBUG("Now recursively handling function: " << func->getName());
       compForwardDataflow(func, &visitor, &result, initval);
 
-      PointToSets &calleeOutBindings = result[targetExit].second; // outcomings of target exit
+      PointToSets &calleeOutBindings =
+          result[targetExit].second; // outcomings of target exit
 
-      // LOG_DEBUG("Binding pairs: ");
-      // for (auto &pair : argPairs) {
-      //   LOG_DEBUG(*pair.first << " => " << *pair.second);
-      // }
-      // LOG_DEBUG("calleeArgBindings: \n" << calleeArgBindings);
-      // LOG_DEBUG("calleeOutBindings: \n" << calleeOutBindings);
-
+      /// 调用完成后根据目标函数最终的outcoming更新当前函数内的变量指向
+      /// TODO: 这块看起来很复杂实际上很多内容可以合并精简，我懒得搞了
       for (auto &pair : argPairs) {
-        LOG_DEBUG("Point 2.");
-        LOG_DEBUG("Trying to fetch arg or return binding for: " << *pair.second);
-
         // 参数返回
         if (calleeOutBindings.hasBinding(pair.second)) {
-          const std::set<Value *> &outBinding = calleeOutBindings.getBinding(pair.second);
-          const std::set<Value *> &inBinding = calleeArgBindings.getBinding(pair.second);
+          const std::set<Value *> &outBinding =
+              calleeOutBindings.getBinding(pair.second);
+          const std::set<Value *> &inBinding =
+              calleeArgBindings.getBinding(pair.second);
           if (outBinding != inBinding) {
             std::set<Value *> binding;
             if (dfval->hasBinding(pair.first)) {
-              const std::set<Value *> &oldBinding = dfval->getBinding(pair.first);
+              const std::set<Value *> &oldBinding =
+                  dfval->getBinding(pair.first);
               binding = oldBinding;
             }
-            const std::set<Value *> &newBinding = calleeOutBindings.getBinding(pair.second);
+            const std::set<Value *> &newBinding =
+                calleeOutBindings.getBinding(pair.second);
             binding.insert(newBinding.begin(), newBinding.end());
             dfval->setBinding(pair.first, binding);
           } else {
@@ -541,8 +495,10 @@ private:
             while (!queue.empty()) {
               Value *v = *queue.begin();
               queue.erase(v);
-              //
-              if (calleeOutBindings.hasPTS(v) && (!calleeArgBindings.hasPTS(v) || calleeOutBindings.getPTS(v) != calleeArgBindings.getPTS(v))) {
+              if (calleeOutBindings.hasPTS(v) &&
+                  (!calleeArgBindings.hasPTS(v) ||
+                   calleeOutBindings.getPTS(v) !=
+                       calleeArgBindings.getPTS(v))) {
                 std::set<Value *> s = calleeOutBindings.getPTS(v);
                 LOG_DEBUG("s: " << s);
                 dfval->setPTS(v, s);
@@ -551,10 +507,8 @@ private:
             }
           }
         } else {
-          LOG_DEBUG("I'm here! " << *pair.second);
-
           std::set<Value *> queue = {pair.second};
-          while(!queue.empty()) {
+          while (!queue.empty()) {
             Value *v = *queue.begin();
             queue.erase(v);
 
@@ -562,7 +516,6 @@ private:
                 (!calleeArgBindings.hasPTS(v) ||
                  calleeOutBindings.getPTS(v) != calleeArgBindings.getPTS(v))) {
               std::set<Value *> s = calleeOutBindings.getPTS(v);
-              LOG_DEBUG("s: " << s);
               dfval->setPTS(v, s);
               queue.insert(s.begin(), s.end());
             } else {
@@ -572,40 +525,11 @@ private:
               }
             }
           }
-
-          // if (calleeOutBindings.getPTS(pair.second) != calleeArgBindings.getPTS(pair.second)) {
-          //   std::set<Value *> s = calleeOutBindings.getPTS(pair.second);
-          //   dfval->setPTS(pair.first, s);
-          // }
         }
-
-        // if (calleeOutBindings.hasBinding(pair.second)) {
-        //   if (calleeOutBindings.getBinding(pair.second) !=
-        //       calleeArgBindings.getBinding(pair.second)) {
-        //     /// TODO: 可能还有单纯的非函数指针传递的情况
-        //     LOG_DEBUG("Point 3.");
-        //     // 可能会存在需要合并多次调用的返回值的情况
-        //     std::set<Value *> binding;
-        //     if (dfval->hasBinding(pair.first)) {
-        //       const std::set<Value *> &oldBinding =
-        //           dfval->getBinding(pair.first);
-        //       binding = oldBinding;
-        //     }
-        //     const std::set<Value *> &newBinding =
-        //         calleeOutBindings.getBinding(pair.second);
-        //     binding.insert(newBinding.begin(), newBinding.end());
-        //     LOG_DEBUG("Point 4.");
-        //     dfval->setBinding(pair.first, binding);
-        //   }
-        // } else {
-        //   if (calleeOutBindings.getPTS(pair.second) != calleeArgBindings.getPTS(pair.second)) {
-        //     std::set<Value *> s = calleeOutBindings.getPTS(pair.second);
-        //     dfval->setPTS(pair.first, s);
-        //   }
-        // }
       }
     }
 
+    // 更新输出结果集
     for (auto functionCalls : visitor.functionCallResult) {
       auto result = functionCallResult.find(functionCalls.first);
       if (result == functionCallResult.end()) {
@@ -616,7 +540,6 @@ private:
       }
     }
   }
-
 };
 
 class PointToAnalysis : public ModulePass {
@@ -632,17 +555,15 @@ public:
 
     // 假设最后一个函数是程序的入口函数
     auto f = M.rbegin(), e = M.rend();
-    for (; (f->isIntrinsic() || f->size() == 0) && f != e; f++) {}
+    for (; (f->isIntrinsic() || f->size() == 0) && f != e; f++) {
+    }
 
     LOG_DEBUG("Entry function: " << f->getName());
     compForwardDataflow(&*f, &visitor, &result, initval);
 
-    // LOG_DEBUG("Here is the dataflow result of the module: ");
-    // printDataflowResult<PointToSets>(errs(), result);
-
     LOG_DEBUG("Results: ");
     visitor.printResults(errs());
-    // ...
+
     return false;
   }
 };
